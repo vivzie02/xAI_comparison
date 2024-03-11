@@ -2,4 +2,7 @@ numpy
 networkx
 matplotlib
 pandas
-sklearn
+scikit-learn
+wave
+librosa
+scipy

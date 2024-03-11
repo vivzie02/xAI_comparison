@@ -3,9 +3,13 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import pandas as pd
 from sklearn.preprocessing import MaxAbsScaler
+import os
+import librosa
+from scipy import stats
 
 # setups
 np.random.seed()
+scaler = MaxAbsScaler()
 
 
 # single neuron, has single bias and a list of weights equal to the amount of inputs from the layer before
@@ -16,9 +20,13 @@ class Neuron:
         self.bias = 0
         self.output = 0
 
-    def forward(self, inputs):
-        self.output = np.dot(self.weights, inputs)[0] + self.bias
+    def activation(self, neuron_value):
+        # ReLU for now, maybe change later
+        return max(0, neuron_value)
 
+    def forward(self, inputs):
+        neuron_value = np.dot(self.weights, inputs)[0] + self.bias
+        self.output = self.activation(neuron_value)
         print("Neuron output: input/weights/bias/output")
         print(inputs, self.weights, self.bias, self.output)
         return self.output
@@ -60,8 +68,9 @@ class Network:
         # add output layer
         self.layers.append(Layer(n_inputs, n_output_classes, False))
 
-    def train_network(self, inputs):
-        test = inputs[0]
+    def predict(self, inputs):
+        print("predict on ", inputs)
+        test = inputs[:50]
         for layer in self.layers:
             test = layer.forward(test)
 
@@ -93,29 +102,55 @@ class Network:
         plt.show()
 
 
+def normalize(audio_data):
+    max_abs = np.max(np.abs(audio_data))
+    norm_data = audio_data / max_abs
+    return norm_data
+
+
+def feature_extraction(file):
+    x, sample_rate = librosa.load(file)
+    mfcc = np.mean(librosa.feature.mfcc(y=x, sr=sample_rate, n_mfcc=50).T, axis=0)
+    return mfcc
+
+
 if __name__ == "__main__":
-    # jede Zeile hier wäre ein eigenes Audio file...
-    # pass in batches, but not too many, because of overfitting
-    X = [[1, 2, 3, 2.5],
-         [2.0, 5.0, -1.0, 2.0],
-         [-1.5, 2.7, 3.3, -0.8],
-         [1, 2, 3, 4]]
+    # read data
+    columns = ['audio_data', 'genre']
+    data = []
+    genres = []
+    for folder, subs, files in os.walk('../archive (15)/Data/genres_original'):
+        for filename in files:
+            try:
+                data.append([feature_extraction(folder + '/' + filename), os.path.basename(folder)])
+            except IOError:
+                print("Could not open ", filename)
+                continue
 
-    layer_nodes = [3, 5, 4, 9, 2]
-    n_hidden_layers = 5
-    n_output_classes = 2
+    df = pd.DataFrame(data, columns=columns)
+    df_genres = df['genre'].copy()
+    df_with_features = pd.DataFrame(df['audio_data'].tolist())
 
-    df = pd.DataFrame(X)
-    # normalize data
-    scaler = MaxAbsScaler()
-    df = scaler.fit_transform(df)
+    # data augmentation coming soon
+    '''for column in df_with_features:
+        plt.figure()
+        df_with_features.boxplot([column])
+        plt.show()
+    '''
 
-    # how many layers?
-    # adjust number of input features/classes/...
-    nn = Network(n_hidden_layers, df.shape[1], n_output_classes, layer_nodes)
+    df_with_features = pd.DataFrame(scaler.fit_transform(df_with_features))
+    df_all_columns = pd.concat([df_with_features, df_genres], axis=1)
+
+    # remove outliers
+    df_all_columns = df_all_columns[(np.abs(stats.zscore(df_all_columns.iloc[:, :50])) < 3).all(axis=1)]
+
+    # build network
+    layer_nodes = [10, 10]
+    n_hidden_layers = len(layer_nodes)
+    n_output_classes = 10
+    n_inputs = 50
+
+    nn = Network(n_hidden_layers, n_inputs, n_output_classes, layer_nodes)
     nn.print_network()
 
-    nn.train_network(X)
-
-
-
+    nn.predict(df_all_columns.iloc[0])
