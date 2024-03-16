@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/xAI_sound_classifier_simple.iml" filepath="$PROJECT_DIR$/.idea/xAI_sound_classifier_simple.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/xAI_comparison.iml" filepath="$PROJECT_DIR$/.idea/xAI_comparison.iml" />
     </modules>
   </component>
 </project>

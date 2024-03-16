@@ -1,8 +1,0 @@
-numpy
-networkx
-matplotlib
-pandas
-scikit-learn
-wave
-librosa
-scipy
