@@ -9,3 +9,4 @@ numba~=0.59.1
 packaging~=24.0
 librosa~=0.10.1
 torch~=2.2.2
+scikit-learn~=1.4.1.post1

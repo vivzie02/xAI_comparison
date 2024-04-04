@@ -42,10 +42,9 @@ def get_images(data_path):
 def main():
     data_path = './archive (15)/Data/genres_original/'
 
+    # get audio feature images
     images = get_images(data_path)
     tensor = torch.tensor(images)
-
-    print("done")
 
 
 if __name__ == "__main__":
