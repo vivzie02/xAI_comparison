@@ -12,9 +12,7 @@ import matplotlib.pyplot as plt
 
 # region Preprocessing
 
-def pad_and_normalize(feature, max_height, max_width, name):
-    # normalize over each individual image feature
-    feature = (feature - np.min(feature)) / (np.max(feature) - np.min(feature))
+def pad(feature, max_height, max_width, name):
     '''
     plt.figure(figsize=(25, 5))
     librosa.display.specshow(feature, x_axis='time')
@@ -26,8 +24,8 @@ def pad_and_normalize(feature, max_height, max_width, name):
 
 # takes the path to audio files and returns a 4D tensor-a 3d image for each file (audio_files, width, height, channels)
 def get_features(data_path):
-    max_width = 100
-    max_height = 20
+    max_width = 1000
+    max_height = 50
     images = []
     genres = []
     for root, dirs, files in os.walk(data_path):
@@ -50,10 +48,10 @@ def get_features(data_path):
             chroma_stft = librosa.feature.chroma_stft(y=y, sr=sr)
             chroma_stft = chroma_stft[:max_height, :max_width]
 
-            mfcc = pad_and_normalize(mfcc, max_height, max_width, "MFCC")
-            delta_mfcc = pad_and_normalize(delta_mfcc, max_height, max_width, "Delta MFCC")
-            stft = pad_and_normalize(stft, max_height, max_width, "STFT")
-            chroma_stft = pad_and_normalize(chroma_stft, max_height, max_width, "Chromogram STFT")
+            mfcc = pad(mfcc, max_height, max_width, "MFCC")
+            delta_mfcc = pad(delta_mfcc, max_height, max_width, "Delta MFCC")
+            stft = pad(stft, max_height, max_width, "STFT")
+            chroma_stft = pad(chroma_stft, max_height, max_width, "Chromogram STFT")
 
             images.append((mfcc, delta_mfcc, stft, chroma_stft))
             genres.append(genre)
@@ -67,37 +65,40 @@ def get_features(data_path):
 class Network(nn.Module):
     def __init__(self):
         super().__init__()
-        self.flatten = nn.Flatten()
+        self.conv1 = nn.Conv2d(4, 32, kernel_size=(3, 3), padding=1)
+        self.bn1 = nn.BatchNorm2d(32)
+        self.pool1 = nn.MaxPool2d(kernel_size=(2, 2))
 
-        self.conv1 = nn.Conv2d(4, 32, kernel_size=(3, 3), stride=1, padding=1)
-        self.act1 = nn.ReLU()
-        self.drop1 = nn.Dropout(0.3)
-
-        self.conv2 = nn.Conv2d(32, 32, kernel_size=(3, 3), stride=1, padding=1)
-        self.act2 = nn.ReLU()
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=(3, 3), padding=1)
+        self.bn2 = nn.BatchNorm2d(64)
         self.pool2 = nn.MaxPool2d(kernel_size=(2, 2))
 
-        self.fc3 = nn.Linear(16000, 512)
-        self.act3 = nn.ReLU()
-        self.drop3 = nn.Dropout(0.5)
+        self.conv3 = nn.Conv2d(64, 128, kernel_size=(3, 3), padding=1)
+        self.bn3 = nn.BatchNorm2d(128)
+        self.pool3 = nn.MaxPool2d(kernel_size=(2, 2))
 
-        self.fc4 = nn.Linear(512, 10)
+        self.conv4 = nn.Conv2d(128, 256, kernel_size=(3, 3), padding=1)
+        self.bn4 = nn.BatchNorm2d(256)
+        self.pool4 = nn.MaxPool2d(kernel_size=(2, 2))
+
+        self.flatten = nn.Flatten()
+
+        self.fc1 = nn.Linear(256 * 3 * 62, 512)
+        self.fc2 = nn.Linear(512, 256)
+        self.fc3 = nn.Linear(256, 10)
+
+        self.dropout = nn.Dropout(0.5)
 
     def forward(self, x):
-        # input x as (4x20x100)
-        x = self.act1(self.conv1(x))
-        x = self.drop1(x)
-        # second layer
-        x = self.act2(self.conv2(x))
-        # (32x20x100) to (32x10x50)
-        x = self.pool2(x)
-        # third layer (32x10x50) to 16000
+        x = self.pool1(torch.relu(self.bn1(self.conv1(x))))
+        x = self.pool2(torch.relu(self.bn2(self.conv2(x))))
+        x = self.pool3(torch.relu(self.bn3(self.conv3(x))))
+        x = self.pool4(torch.relu(self.bn4(self.conv4(x))))
+
         x = self.flatten(x)
-        # fourth layer 16000 to 512
-        x = self.act3(self.fc3(x))
-        x = self.drop3(x)
-        # final layer 512 to 10
-        x = self.fc4(x)
+        x = self.dropout(torch.relu(self.fc1(x)))
+        x = self.dropout(torch.relu(self.fc2(x)))
+        x = self.fc3(x)
         return x
 
 # endregion
@@ -109,53 +110,63 @@ def main():
     # get audio feature images
     images, genres = get_features(data_path)
 
-    device = (
-        "cuda"
-        if torch.cuda.is_available()
-        else "mps"
-        if torch.backends.mps.is_available()
-        else "cpu"
-    )
+    device = ("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device} device")
 
     # train the network
     label_encoder = LabelEncoder()
 
+    # split into test/train and normalize
     X_train, X_test, y_train, y_test = train_test_split(images, genres, test_size=0.2, random_state=42)
-    X_train_tensor = torch.tensor(X_train)
-    y_train_tensor = torch.tensor(label_encoder.fit_transform(y_train))
-    X_test_tensor = torch.tensor(X_test)
-    y_test_tensor = torch.tensor(label_encoder.transform(y_test))
 
-    train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
-    test_dataset = TensorDataset(X_test_tensor, y_test_tensor)
+    X_train = np.array((X_train - np.min(X_train)) / (np.max(X_train) - np.min(X_train)))
+    X_train = torch.tensor(X_train / np.std(X_train))
+    y_train = torch.tensor(label_encoder.fit_transform(y_train))
+
+    X_test = np.array((X_test - np.min(X_test)) / (np.max(X_test) - np.min(X_test)))
+    X_test = torch.tensor(X_test / np.std(X_test))
+    y_test = torch.tensor(label_encoder.transform(y_test))
+
+    train_dataset = TensorDataset(X_train, y_train)
+    test_dataset = TensorDataset(X_test, y_test)
 
     batch_size = 32
-    n_epochs = 10
+    n_epochs = 30
 
-    train_loader = DataLoader(train_dataset, shuffle=True)
-    test_loader = DataLoader(test_dataset, shuffle=False)
+    train_loader = DataLoader(train_dataset, shuffle=True, batch_size=batch_size)
+    test_loader = DataLoader(test_dataset, shuffle=False, batch_size=batch_size)
 
-    model = Network()
+    model = Network().to(device)
     loss_fn = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
+    loss_total_training = []
+
     for epoch in range(n_epochs):
+        epoch_loss = []
+
         for inputs, labels in train_loader:
             y_pred = model(inputs)
             loss = loss_fn(y_pred, labels)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            epoch_loss.append(loss.item())
 
-        acc = 0
+        loss_total_training.append(np.array(epoch_loss).mean())
+
         count = 0
+        correct = 0
         for inputs, labels in test_loader:
             y_pred = model(inputs)
-            acc += (torch.argmax(y_pred, 1) == labels).float().sum()
+            _, predicted_classes = torch.max(y_pred, 1)  # Get the index of the maximum logit as the predicted class
+            correct += (predicted_classes == labels).sum().item()
             count += len(labels)
-        acc /= count
-        print("Epoch %d: model accuracy %.2f%%" % (epoch, acc*100))
+        acc = correct / count * 100
+        print("Epoch %d: model accuracy %.2f%%" % (epoch, acc))
 
+    plt.plot(loss_total_training, label='train loss')
+    plt.legend()
+    plt.show()
     torch.save(model.state_dict(), "CNNModel.pth")
 
 
