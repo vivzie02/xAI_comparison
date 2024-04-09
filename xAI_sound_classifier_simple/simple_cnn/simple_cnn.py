@@ -81,9 +81,12 @@ class Network(nn.Module):
         self.bn4 = nn.BatchNorm2d(256)
         self.pool4 = nn.MaxPool2d(kernel_size=(2, 2))
 
+        self.conv5 = nn.Conv2d(256, 512, kernel_size=(3, 3), padding=1)
+        self.bn5 = nn.BatchNorm2d(512)
+
         self.flatten = nn.Flatten()
 
-        self.fc1 = nn.Linear(256 * 3 * 62, 512)
+        self.fc1 = nn.Linear(512 * 3 * 62, 512)
         self.fc2 = nn.Linear(512, 256)
         self.fc3 = nn.Linear(256, 10)
 
@@ -94,6 +97,7 @@ class Network(nn.Module):
         x = self.pool2(torch.relu(self.bn2(self.conv2(x))))
         x = self.pool3(torch.relu(self.bn3(self.conv3(x))))
         x = self.pool4(torch.relu(self.bn4(self.conv4(x))))
+        x = torch.relu(self.bn5(self.conv5(x)))
 
         x = self.flatten(x)
         x = self.dropout(torch.relu(self.fc1(x)))
@@ -119,19 +123,21 @@ def main():
     # split into test/train and normalize
     X_train, X_test, y_train, y_test = train_test_split(images, genres, test_size=0.2, random_state=42)
 
-    X_train = np.array((X_train - np.min(X_train)) / (np.max(X_train) - np.min(X_train)))
-    X_train = torch.tensor(X_train / np.std(X_train))
+    # X_train = np.array((X_train - np.min(X_train)) / (np.max(X_train) - np.min(X_train)))
+    # X_train = torch.tensor(X_train / np.std(X_train))
+    X_train = torch.tensor(X_train)
     y_train = torch.tensor(label_encoder.fit_transform(y_train))
 
-    X_test = np.array((X_test - np.min(X_test)) / (np.max(X_test) - np.min(X_test)))
-    X_test = torch.tensor(X_test / np.std(X_test))
+    # X_test = np.array((X_test - np.min(X_test)) / (np.max(X_test) - np.min(X_test)))
+    # X_test = torch.tensor(X_test / np.std(X_test))
+    X_test = torch.tensor(X_test)
     y_test = torch.tensor(label_encoder.transform(y_test))
 
     train_dataset = TensorDataset(X_train, y_train)
     test_dataset = TensorDataset(X_test, y_test)
 
     batch_size = 32
-    n_epochs = 30
+    n_epochs = 40
 
     train_loader = DataLoader(train_dataset, shuffle=True, batch_size=batch_size)
     test_loader = DataLoader(test_dataset, shuffle=False, batch_size=batch_size)
@@ -140,6 +146,7 @@ def main():
     loss_fn = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
     loss_total_training = []
+    accuracy_scores = []
 
     for epoch in range(n_epochs):
         epoch_loss = []
@@ -162,12 +169,17 @@ def main():
             correct += (predicted_classes == labels).sum().item()
             count += len(labels)
         acc = correct / count * 100
+        accuracy_scores.append(acc)
         print("Epoch %d: model accuracy %.2f%%" % (epoch, acc))
 
     plt.plot(loss_total_training, label='train loss')
     plt.legend()
     plt.show()
-    torch.save(model.state_dict(), "CNNModel.pth")
+
+    plt.plot(accuracy_scores, label='Accuracy')
+    plt.legend()
+    plt.show()
+    # save model
 
 
 if __name__ == "__main__":
