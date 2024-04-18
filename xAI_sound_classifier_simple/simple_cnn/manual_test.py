@@ -1,14 +1,17 @@
+import glob
+
+import cv2
 import librosa
 import numpy as np
 import os
 import torch
 import torch.nn as nn
-from sklearn.model_selection import train_test_split
-from torch.utils.data import TensorDataset, DataLoader
-import torch.optim as optim
-from sklearn.preprocessing import LabelEncoder
+from matplotlib import image as mpimg
+from numpy.random import randint
+from random import choice
 import matplotlib.pyplot as plt
-from PIL import Image as im
+from torch.utils import data
+from torch.utils.data import TensorDataset
 
 
 # region Preprocessing
@@ -23,14 +26,17 @@ def pad(feature, max_height, max_width, name):
 
 
 def save_feature_image(feature, name, file):
-    path = f'./testdata/images/{name}/'
+    path = f'./testdata/temp/'
     file = os.path.splitext(file)[0] + '.png'
-    plt.figure(figsize=(25, 5))
-    librosa.display.specshow(feature, x_axis='time')
-    plt.title(name)
-    plt.colorbar()
-    plt.savefig(path + file)
+    filepath = path + file
+
+    plt.figure(frameon=False)
+    plt.axis('off')
+    librosa.display.specshow(feature)
+    plt.savefig(path + file, bbox_inches='tight', pad_inches=0)
     plt.close()
+
+    return filepath
 
 
 # takes the path to audio files and returns a 4D tensor-a 3d image for each file (audio_files, width, height, channels)
@@ -38,12 +44,11 @@ def get_features(data_path):
     max_width = 1000
     max_height = 50
     images = []
-    genres = []
+    filepaths = []
     for root, dirs, files in os.walk(data_path):
         for file in files:
             print("Getting features for " + file)
             path = os.path.join(root, file)
-            genre = os.path.basename(root)
             # sr is the sampling rate, y is the audio time series
             y, sr = librosa.load(path)
 
@@ -59,7 +64,7 @@ def get_features(data_path):
             # chroma stft
             chroma_stft = librosa.feature.chroma_stft(y=y, sr=sr)
             chroma_stft = chroma_stft[:max_height, :max_width]
-            
+
             mfcc = pad(mfcc, max_height, max_width, "MFCC")
             delta_mfcc = pad(delta_mfcc, max_height, max_width, "Delta MFCC")
             stft = pad(stft, max_height, max_width, "STFT")
@@ -78,18 +83,26 @@ def get_features(data_path):
             save_feature_image(stft, 'stft', file)
             save_feature_image(chroma_stft, 'chroma', file)
             '''
-            save_feature_image(mel_spectrogram_padded, "Mel_Spectrogram", file)
+            filepath = save_feature_image(mel_spectrogram_padded, "Mel_Spectrogram", file)
+            filepaths.append(filepath)
+
             mel_spectrogram_padded = mel_spectrogram_padded[np.newaxis, :, :]
 
             images.append(mel_spectrogram_padded)
-            genres.append(genre)
 
-    return np.array(images), genres
+    return np.array(images), filepaths
+
+
+def show_feature_image(feature):
+    plt.subplot()
+    librosa.display.specshow(feature, x_axis='time')
+    plt.colorbar()
+
+
 # endregion
 
 
 # region CNN
-
 class Network(nn.Module):
     def __init__(self):
         super().__init__()
@@ -136,79 +149,102 @@ class Network(nn.Module):
 # endregion
 
 
-def main():
-    data_path = '../data_loader/archive (15)/Data/genres_original/'
+# region Grad-CAM
+def make_gradcam_heatmap(img_tensor, model, last_conv_layer_name):
+    # Create a sub-model that outputs the feature maps and final prediction
+    class SubModel(nn.Module):
+        def __init__(self, base_model, last_conv_layer_name):
+            super(SubModel, self).__init__()
+            self.base_model = base_model
+            self.last_conv_layer_name = last_conv_layer_name
 
-    # get audio feature images
-    images, genres = get_features(data_path)
+        def forward(self, x):
+            # Get the output of the specified layer
+            submodel = nn.Sequential(*list(model.children())[:13])
+            conv_output = submodel(x)
 
-    device = ("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using {device} device")
+            # Get the final output of the model
+            final_output = self.base_model(x)
 
-    # train the network
-    label_encoder = LabelEncoder()
+            return conv_output, final_output
 
-    # split into test/train and normalize
-    X_train, X_test, y_train, y_test = train_test_split(images, genres, test_size=0.2, random_state=42)
+    grad_model = SubModel(model, last_conv_layer_name)
 
-    # X_train = np.array((X_train - np.min(X_train)) / (np.max(X_train) - np.min(X_train)))
-    # X_train = torch.tensor(X_train / np.std(X_train))
-    X_train = torch.tensor(X_train)
-    y_train = torch.tensor(label_encoder.fit_transform(y_train))
+    # Set the model to evaluation mode
+    grad_model.eval()
 
-    # X_test = np.array((X_test - np.min(X_test)) / (np.max(X_test) - np.min(X_test)))
-    # X_test = torch.tensor(X_test / np.std(X_test))
-    X_test = torch.tensor(X_test)
-    y_test = torch.tensor(label_encoder.transform(y_test))
+    # Use autograd to record gradients
+    img_tensor.requires_grad_(True)
+    conv_output, preds = grad_model(img_tensor)
 
-    train_dataset = TensorDataset(X_train, y_train)
-    test_dataset = TensorDataset(X_test, y_test)
+    pred_index = torch.argmax(preds, dim=1)
 
-    batch_size = 32
-    n_epochs = 40
+    # Gather the class score corresponding to the predicted class
+    class_score = preds[:, pred_index]
 
-    train_loader = DataLoader(train_dataset, shuffle=True, batch_size=batch_size)
-    test_loader = DataLoader(test_dataset, shuffle=False, batch_size=batch_size)
+    # Backpropagate
+    grad_model.zero_grad()
+    class_score.backward()
 
-    model = Network().to(device)
-    loss_fn = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
-    loss_total_training = []
-    accuracy_scores = []
+    # Get the gradients from the last convolutional layer
+    gradients = grad_model.base_model.conv5.weight.grad
 
-    for epoch in range(n_epochs):
-        epoch_loss = []
+    # Pool the gradients across the channels
+    pooled_gradients = torch.mean(gradients, dim=[0, 2, 3])
 
-        for inputs, labels in train_loader:
-            y_pred = model(inputs)
-            loss = loss_fn(y_pred, labels)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            epoch_loss.append(loss.item())
+    # Get the activations of the last convolutional layer (activations)
+    last_conv_layer_output = conv_output.detach()
 
-        loss_total_training.append(np.array(epoch_loss).mean())
+    for i in range(256):
+        last_conv_layer_output[:, i, :, :] *= pooled_gradients[i]
 
-        count = 0
-        correct = 0
-        for inputs, labels in test_loader:
-            y_pred = model(inputs)
-            _, predicted_classes = torch.max(y_pred, 1)  # Get the index of the maximum logit as the predicted class
-            correct += (predicted_classes == labels).sum().item()
-            count += len(labels)
-        acc = correct / count * 100
-        accuracy_scores.append(acc)
-        print("Epoch %d: model accuracy %.2f%%" % (epoch, acc))
+    # get temp
+    heatmap = torch.mean(last_conv_layer_output, dim=1).squeeze()
 
-    plt.plot(loss_total_training, label='train loss')
-    plt.legend()
+    # Normalise the temp
+    heatmap = np.maximum(heatmap, 0)
+    heatmap /= torch.max(heatmap)
+
+    plt.matshow(heatmap.squeeze())
     plt.show()
 
-    plt.plot(accuracy_scores, label='Accuracy')
-    plt.legend()
-    plt.show()
-    torch.save(model.state_dict(), "CNNModel.pth")
+    return heatmap
+# endregion
 
 
-if __name__ == "__main__":
-    main()
+testdata_path = './testdata/audio/'
+
+images, filepaths = get_features(testdata_path)
+
+images = torch.tensor(images)
+
+model = Network()
+model.load_state_dict(torch.load("CNNModel.pth"))
+model.eval()
+
+output = model(images)
+
+predicted_label = torch.argmax(output, dim=1)
+
+# load images into a data loader
+image_loader = data.DataLoader(dataset=images, shuffle=False, batch_size=1)
+
+for i, label in enumerate(predicted_label):
+    image = next(iter(image_loader))
+    heatmap = make_gradcam_heatmap(image, model, 'conv5').detach().numpy()
+
+    img = cv2.imread(filepaths[i])
+    cv2.imshow("Test", img)
+
+    heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
+    heatmap = np.uint8(255 * heatmap)
+    heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+    superimposed_img = cv2.addWeighted(heatmap, 0.4, img, 1, 0)
+
+    cv2.imshow('Heatmap', heatmap)
+    cv2.waitKey(0)
+
+    cv2.imshow('Image with Heatmap', superimposed_img)
+    cv2.waitKey(0)
+
+    print("Predicted labels:", label.item())
