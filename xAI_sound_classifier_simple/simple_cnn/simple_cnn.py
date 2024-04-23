@@ -9,6 +9,8 @@ import torch.optim as optim
 from sklearn.preprocessing import LabelEncoder
 import matplotlib.pyplot as plt
 from PIL import Image as im
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
 
 
 # region Preprocessing
@@ -36,7 +38,7 @@ def save_feature_image(feature, name, file):
 # takes the path to audio files and returns a 4D tensor-a 3d image for each file (audio_files, width, height, channels)
 def get_features(data_path):
     max_width = 1000
-    max_height = 50
+    max_height = 40
     images = []
     genres = []
     for root, dirs, files in os.walk(data_path):
@@ -47,39 +49,33 @@ def get_features(data_path):
             # sr is the sampling rate, y is the audio time series
             y, sr = librosa.load(path)
 
-            '''
             # mfcc
-            mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=max_height, n_fft=255, hop_length=512, n_mels=50)
-            mfcc = mfcc[:max_height, :max_width]
+            mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=max_height, n_fft=512, hop_length=160, n_mels=40)
+            mfcc = mfcc[:, :max_width]
+            mfcc = pad(mfcc, max_height, max_width, "MFCC")
+            # mfcc = np.expand_dims(mfcc, axis=0)
             # delta mfcc
             delta_mfcc = librosa.feature.delta(mfcc)
+            # chroma stft
+            chroma_stft = librosa.feature.chroma_stft(y=y, sr=sr)
+            '''
             # STFT (short time fourier)
             stft = np.abs(librosa.stft(y, n_fft=255))
             stft = stft[:max_height, :max_width]
-            # chroma stft
-            chroma_stft = librosa.feature.chroma_stft(y=y, sr=sr)
-            chroma_stft = chroma_stft[:max_height, :max_width]
             
-            mfcc = pad(mfcc, max_height, max_width, "MFCC")
             delta_mfcc = pad(delta_mfcc, max_height, max_width, "Delta MFCC")
             stft = pad(stft, max_height, max_width, "STFT")
-            chroma_stft = pad(chroma_stft, max_height, max_width, "Chromogram STFT")
             '''
             mel_spectrogram = librosa.feature.melspectrogram(y=y, sr=sr, n_fft=255, n_mels=max_height)
             # Convert to dB scale for better visualization
             mel_spectrogram = librosa.power_to_db(mel_spectrogram, ref=np.max)
             mel_spectrogram = mel_spectrogram[:, :max_width]
             mel_spectrogram_padded = pad(mel_spectrogram, max_height, max_width, "Mel Spectrogram")
+            mel_spectrogram_padded = np.expand_dims(mel_spectrogram_padded, axis=0)
 
-            # save image "layers" for later
-            '''
-            save_feature_image(mfcc, 'mfcc', file)
-            save_feature_image(delta_mfcc, 'delta', file)
-            save_feature_image(stft, 'stft', file)
-            save_feature_image(chroma_stft, 'chroma', file)
-            '''
-            save_feature_image(mel_spectrogram_padded, "Mel_Spectrogram", file)
-            mel_spectrogram_padded = mel_spectrogram_padded[np.newaxis, :, :]
+            chroma_stft = chroma_stft[:, :max_width]
+            chroma_stft = pad(chroma_stft, max_height, max_width, "Chromogram STFT")
+            # chroma_stft = np.expand_dims(chroma_stft, axis=0)
 
             images.append(mel_spectrogram_padded)
             genres.append(genre)
@@ -89,55 +85,98 @@ def get_features(data_path):
 
 
 # region CNN
-
 class Network(nn.Module):
     def __init__(self):
         super().__init__()
         self.conv1 = nn.Conv2d(1, 32, kernel_size=(3, 3), padding=1)
         self.bn1 = nn.BatchNorm2d(32)
-        self.pool1 = nn.MaxPool2d(kernel_size=(2, 2))
 
         self.conv2 = nn.Conv2d(32, 64, kernel_size=(3, 3), padding=1)
         self.bn2 = nn.BatchNorm2d(64)
         self.pool2 = nn.MaxPool2d(kernel_size=(2, 2))
 
-        self.conv3 = nn.Conv2d(64, 128, kernel_size=(3, 3), padding=1)
-        self.bn3 = nn.BatchNorm2d(128)
-        self.pool3 = nn.MaxPool2d(kernel_size=(2, 2))
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=(3, 3), padding=1)
+        self.bn3 = nn.BatchNorm2d(64)
 
-        self.conv4 = nn.Conv2d(128, 256, kernel_size=(3, 3), padding=1)
-        self.bn4 = nn.BatchNorm2d(256)
+        self.conv11 = nn.Conv2d(64, 128, kernel_size=(3, 3), padding=1)
+        self.bn11 = nn.BatchNorm2d(128)
+
+        self.conv4 = nn.Conv2d(128, 128, kernel_size=(3, 3), padding=1)
+        self.bn4 = nn.BatchNorm2d(128)
         self.pool4 = nn.MaxPool2d(kernel_size=(2, 2))
 
-        self.conv5 = nn.Conv2d(256, 512, kernel_size=(3, 3), padding=1)
-        self.bn5 = nn.BatchNorm2d(512)
+        self.conv5 = nn.Conv2d(128, 256, kernel_size=(3, 3), padding=1)
+        self.bn5 = nn.BatchNorm2d(256)
+
+        self.conv13 = nn.Conv2d(256, 256, kernel_size=(3, 3), padding=1)
+        self.bn13 = nn.BatchNorm2d(256)
+
+        self.conv6 = nn.Conv2d(256, 128, kernel_size=(3, 3), padding=1)
+        self.bn6 = nn.BatchNorm2d(128)
+        self.pool6 = nn.MaxPool2d(kernel_size=(2, 2))
+
+        self.conv7 = nn.Conv2d(128, 256, kernel_size=(3, 3), padding=1)
+        self.bn7 = nn.BatchNorm2d(256)
+
+        self.conv12 = nn.Conv2d(256, 256, kernel_size=(3, 3), padding=1)
+        self.bn12 = nn.BatchNorm2d(256)
+
+        self.conv8 = nn.Conv2d(256, 128, kernel_size=(3, 3), padding=1)
+        self.bn8 = nn.BatchNorm2d(128)
+        self.pool8 = nn.MaxPool2d(kernel_size=(2, 2))
+
+        self.conv9 = nn.Conv2d(128, 256, kernel_size=(3, 3), padding=1)
+        self.bn9 = nn.BatchNorm2d(256)
+
+        self.conv10 = nn.Conv2d(256, 256, kernel_size=(3, 3), padding=1)
+        self.bn10 = nn.BatchNorm2d(256)
+        self.pool10 = nn.MaxPool2d(kernel_size=(2, 2))
 
         self.flatten = nn.Flatten()
 
-        self.fc1 = nn.Linear(512 * 3 * 62, 512)
+        self.fc1 = nn.Linear(256 * 1 * 31, 512)
         self.fc2 = nn.Linear(512, 256)
         self.fc3 = nn.Linear(256, 10)
 
         self.dropout = nn.Dropout(0.5)
 
     def forward(self, x):
-        x = self.pool1(torch.relu(self.bn1(self.conv1(x))))
+        x = torch.relu(self.bn1(self.conv1(x)))
         x = self.pool2(torch.relu(self.bn2(self.conv2(x))))
-        x = self.pool3(torch.relu(self.bn3(self.conv3(x))))
+        x = torch.relu(self.bn3(self.conv3(x)))
+        x = torch.relu(self.bn11(self.conv11(x)))
         x = self.pool4(torch.relu(self.bn4(self.conv4(x))))
         x = torch.relu(self.bn5(self.conv5(x)))
+        x = torch.relu(self.bn13(self.conv13(x)))
+        x = self.pool6(torch.relu(self.bn6(self.conv6(x))))
+        x = torch.relu(self.bn7(self.conv7(x)))
+        x = torch.relu(self.bn12(self.conv12(x)))
+        x = self.pool8(torch.relu(self.bn8(self.conv8(x))))
+        x = torch.relu(self.bn9(self.conv9(x)))
+        x = self.pool10(torch.relu(self.bn10(self.conv10(x))))
 
         x = self.flatten(x)
         x = self.dropout(torch.relu(self.fc1(x)))
         x = self.dropout(torch.relu(self.fc2(x)))
         x = self.fc3(x)
         return x
-
 # endregion
+
+
+def plot_confusion_matrix(y_true, y_pred, classes):
+    cm = confusion_matrix(y_true, y_pred)
+    plt.figure(figsize=(10, 8))
+    ax = sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=classes, yticklabels=classes)
+    ax.set_xlabel('Predicted labels')
+    ax.set_ylabel('True labels')
+    ax.set_title('Confusion Matrix')
+    plt.show()
 
 
 def main():
     data_path = '../data_loader/archive (15)/Data/genres_original/'
+
+    print(torch.cuda.is_available())
 
     # get audio feature images
     images, genres = get_features(data_path)
@@ -180,6 +219,7 @@ def main():
         epoch_loss = []
 
         for inputs, labels in train_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
             y_pred = model(inputs)
             loss = loss_fn(y_pred, labels)
             optimizer.zero_grad()
@@ -191,9 +231,14 @@ def main():
 
         count = 0
         correct = 0
+        y_true = []
+        all_predictions = []
         for inputs, labels in test_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
             y_pred = model(inputs)
             _, predicted_classes = torch.max(y_pred, 1)  # Get the index of the maximum logit as the predicted class
+            all_predictions.extend(predicted_classes.tolist())
+            y_true.extend(labels.tolist())
             correct += (predicted_classes == labels).sum().item()
             count += len(labels)
         acc = correct / count * 100
@@ -208,6 +253,8 @@ def main():
     plt.legend()
     plt.show()
     torch.save(model.state_dict(), "CNNModel.pth")
+
+    plot_confusion_matrix(y_true, all_predictions, label_encoder.classes_)
 
 
 if __name__ == "__main__":

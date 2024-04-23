@@ -42,33 +42,34 @@ def save_feature_image(feature, name, file):
 # takes the path to audio files and returns a 4D tensor-a 3d image for each file (audio_files, width, height, channels)
 def get_features(data_path):
     max_width = 1000
-    max_height = 50
+    max_height = 40
     images = []
+    genres = []
     filepaths = []
     for root, dirs, files in os.walk(data_path):
         for file in files:
             print("Getting features for " + file)
             path = os.path.join(root, file)
+            genre = os.path.basename(root)
             # sr is the sampling rate, y is the audio time series
             y, sr = librosa.load(path)
 
-            '''
             # mfcc
-            mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=max_height, n_fft=255, hop_length=512, n_mels=50)
-            mfcc = mfcc[:max_height, :max_width]
+            mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=max_height, n_fft=512, hop_length=160, n_mels=40)
+            mfcc = mfcc[:, :max_width]
+            mfcc = pad(mfcc, max_height, max_width, "MFCC")
+            # mfcc = np.expand_dims(mfcc, axis=0)
             # delta mfcc
             delta_mfcc = librosa.feature.delta(mfcc)
+            # chroma stft
+            chroma_stft = librosa.feature.chroma_stft(y=y, sr=sr)
+            '''
             # STFT (short time fourier)
             stft = np.abs(librosa.stft(y, n_fft=255))
             stft = stft[:max_height, :max_width]
-            # chroma stft
-            chroma_stft = librosa.feature.chroma_stft(y=y, sr=sr)
-            chroma_stft = chroma_stft[:max_height, :max_width]
 
-            mfcc = pad(mfcc, max_height, max_width, "MFCC")
             delta_mfcc = pad(delta_mfcc, max_height, max_width, "Delta MFCC")
             stft = pad(stft, max_height, max_width, "STFT")
-            chroma_stft = pad(chroma_stft, max_height, max_width, "Chromogram STFT")
             '''
             mel_spectrogram = librosa.feature.melspectrogram(y=y, sr=sr, n_fft=255, n_mels=max_height)
             # Convert to dB scale for better visualization
@@ -76,27 +77,18 @@ def get_features(data_path):
             mel_spectrogram = mel_spectrogram[:, :max_width]
             mel_spectrogram_padded = pad(mel_spectrogram, max_height, max_width, "Mel Spectrogram")
 
-            # save image "layers" for later
-            '''
-            save_feature_image(mfcc, 'mfcc', file)
-            save_feature_image(delta_mfcc, 'delta', file)
-            save_feature_image(stft, 'stft', file)
-            save_feature_image(chroma_stft, 'chroma', file)
-            '''
+            chroma_stft = chroma_stft[:, :max_width]
+            chroma_stft = pad(chroma_stft, max_height, max_width, "Chromogram STFT")
+            # chroma_stft = np.expand_dims(chroma_stft, axis=0)
+
             filepath = save_feature_image(mel_spectrogram_padded, "Mel_Spectrogram", file)
+            mel_spectrogram_padded = np.expand_dims(mel_spectrogram_padded, axis=0)
             filepaths.append(filepath)
 
-            mel_spectrogram_padded = mel_spectrogram_padded[np.newaxis, :, :]
-
             images.append(mel_spectrogram_padded)
+            genres.append(genre)
 
     return np.array(images), filepaths
-
-
-def show_feature_image(feature):
-    plt.subplot()
-    librosa.display.specshow(feature, x_axis='time')
-    plt.colorbar()
 
 
 # endregion
@@ -108,49 +100,81 @@ class Network(nn.Module):
         super().__init__()
         self.conv1 = nn.Conv2d(1, 32, kernel_size=(3, 3), padding=1)
         self.bn1 = nn.BatchNorm2d(32)
-        self.pool1 = nn.MaxPool2d(kernel_size=(2, 2))
 
         self.conv2 = nn.Conv2d(32, 64, kernel_size=(3, 3), padding=1)
         self.bn2 = nn.BatchNorm2d(64)
         self.pool2 = nn.MaxPool2d(kernel_size=(2, 2))
 
-        self.conv3 = nn.Conv2d(64, 128, kernel_size=(3, 3), padding=1)
-        self.bn3 = nn.BatchNorm2d(128)
-        self.pool3 = nn.MaxPool2d(kernel_size=(2, 2))
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=(3, 3), padding=1)
+        self.bn3 = nn.BatchNorm2d(64)
 
-        self.conv4 = nn.Conv2d(128, 256, kernel_size=(3, 3), padding=1)
-        self.bn4 = nn.BatchNorm2d(256)
+        self.conv11 = nn.Conv2d(64, 128, kernel_size=(3, 3), padding=1)
+        self.bn11 = nn.BatchNorm2d(128)
+
+        self.conv4 = nn.Conv2d(128, 128, kernel_size=(3, 3), padding=1)
+        self.bn4 = nn.BatchNorm2d(128)
         self.pool4 = nn.MaxPool2d(kernel_size=(2, 2))
 
-        self.conv5 = nn.Conv2d(256, 512, kernel_size=(3, 3), padding=1)
-        self.bn5 = nn.BatchNorm2d(512)
+        self.conv5 = nn.Conv2d(128, 256, kernel_size=(3, 3), padding=1)
+        self.bn5 = nn.BatchNorm2d(256)
+
+        self.conv13 = nn.Conv2d(256, 256, kernel_size=(3, 3), padding=1)
+        self.bn13 = nn.BatchNorm2d(256)
+
+        self.conv6 = nn.Conv2d(256, 128, kernel_size=(3, 3), padding=1)
+        self.bn6 = nn.BatchNorm2d(128)
+        self.pool6 = nn.MaxPool2d(kernel_size=(2, 2))
+
+        self.conv7 = nn.Conv2d(128, 256, kernel_size=(3, 3), padding=1)
+        self.bn7 = nn.BatchNorm2d(256)
+
+        self.conv12 = nn.Conv2d(256, 256, kernel_size=(3, 3), padding=1)
+        self.bn12 = nn.BatchNorm2d(256)
+
+        self.conv8 = nn.Conv2d(256, 128, kernel_size=(3, 3), padding=1)
+        self.bn8 = nn.BatchNorm2d(128)
+        self.pool8 = nn.MaxPool2d(kernel_size=(2, 2))
+
+        self.conv9 = nn.Conv2d(128, 256, kernel_size=(3, 3), padding=1)
+        self.bn9 = nn.BatchNorm2d(256)
+
+        self.conv10 = nn.Conv2d(256, 256, kernel_size=(3, 3), padding=1)
+        self.bn10 = nn.BatchNorm2d(256)
+        self.pool10 = nn.MaxPool2d(kernel_size=(2, 2))
 
         self.flatten = nn.Flatten()
 
-        self.fc1 = nn.Linear(512 * 3 * 62, 512)
+        self.fc1 = nn.Linear(256 * 1 * 31, 512)
         self.fc2 = nn.Linear(512, 256)
         self.fc3 = nn.Linear(256, 10)
 
         self.dropout = nn.Dropout(0.5)
 
     def forward(self, x):
-        x = self.pool1(torch.relu(self.bn1(self.conv1(x))))
+        x = torch.relu(self.bn1(self.conv1(x)))
         x = self.pool2(torch.relu(self.bn2(self.conv2(x))))
-        x = self.pool3(torch.relu(self.bn3(self.conv3(x))))
+        x = torch.relu(self.bn3(self.conv3(x)))
+        x = torch.relu(self.bn11(self.conv11(x)))
         x = self.pool4(torch.relu(self.bn4(self.conv4(x))))
         x = torch.relu(self.bn5(self.conv5(x)))
+        x = torch.relu(self.bn13(self.conv13(x)))
+        x = self.pool6(torch.relu(self.bn6(self.conv6(x))))
+        x = torch.relu(self.bn7(self.conv7(x)))
+        x = torch.relu(self.bn12(self.conv12(x)))
+        x = self.pool8(torch.relu(self.bn8(self.conv8(x))))
+        x = torch.relu(self.bn9(self.conv9(x)))
+        x = self.pool10(torch.relu(self.bn10(self.conv10(x))))
 
         x = self.flatten(x)
         x = self.dropout(torch.relu(self.fc1(x)))
         x = self.dropout(torch.relu(self.fc2(x)))
         x = self.fc3(x)
         return x
-
 # endregion
 
 
 # region Grad-CAM
-def make_gradcam_heatmap(img_tensor, model, last_conv_layer_name):
+def make_gradcam_heatmap(img_tensor, model, last_conv_layer_name, pred_index):
     # Create a sub-model that outputs the feature maps and final prediction
     class SubModel(nn.Module):
         def __init__(self, base_model, last_conv_layer_name):
@@ -177,8 +201,6 @@ def make_gradcam_heatmap(img_tensor, model, last_conv_layer_name):
     img_tensor.requires_grad_(True)
     conv_output, preds = grad_model(img_tensor)
 
-    pred_index = torch.argmax(preds, dim=1)
-
     # Gather the class score corresponding to the predicted class
     class_score = preds[:, pred_index]
 
@@ -187,7 +209,7 @@ def make_gradcam_heatmap(img_tensor, model, last_conv_layer_name):
     class_score.backward()
 
     # Get the gradients from the last convolutional layer
-    gradients = grad_model.base_model.conv5.weight.grad
+    gradients = grad_model.base_model.conv10.weight.grad
 
     # Pool the gradients across the channels
     pooled_gradients = torch.mean(gradients, dim=[0, 2, 3])
@@ -198,21 +220,54 @@ def make_gradcam_heatmap(img_tensor, model, last_conv_layer_name):
     for i in range(256):
         last_conv_layer_output[:, i, :, :] *= pooled_gradients[i]
 
-    # get temp
+    # get heatmap
     heatmap = torch.mean(last_conv_layer_output, dim=1).squeeze()
 
-    # Normalise the temp
+    # Normalise the heatmap
     heatmap = np.maximum(heatmap, 0)
     heatmap /= torch.max(heatmap)
 
-    plt.matshow(heatmap.squeeze())
-    plt.show()
+    # plt.matshow(heatmap.squeeze())
+    # plt.show()
 
     return heatmap
 # endregion
 
 
+def plot_gradcam_heatmaps(img, model, genres, outputs, heatmaps):
+    outputs = torch.softmax(outputs, dim=0)
+    # cv2 uses BGR
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    plt.figure(figsize=(15, 10))
+
+    for k in range(len(genre_classes)):
+        # try heatmap by changing visibility of the colors
+        heatmap = heatmaps[k]
+        heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
+
+        superimposed_img = img
+
+        # can't see anything, display side by side instead
+        # superimposed_img = cv2.addWeighted(heatmap, 0.4, img, 1, 0)
+
+        plt.subplot(5, 4, k*2 + 1)
+        plt.imshow(heatmap, cmap='hot')
+        plt.axis('off')
+        plt.title(f"Grad-CAM Heatmap for {genre_classes[k]}", fontsize=8)
+
+        plt.subplot(5, 4, k*2 + 2)
+        plt.imshow(img)
+        plt.axis('off')
+        plt.title(f"Predicted {genre_classes[k]} with a score of {outputs[k]}", fontsize=8)
+
+        plt.tight_layout()
+
+    plt.show()
+
+
 testdata_path = './testdata/audio/'
+genre_classes = ['blues', 'classical', 'country', 'disco', 'hiphop', 'jazz', 'metal', 'pop', 'reggae', 'rock']
 
 images, filepaths = get_features(testdata_path)
 
@@ -231,20 +286,34 @@ image_loader = data.DataLoader(dataset=images, shuffle=False, batch_size=1)
 
 for i, label in enumerate(predicted_label):
     image = next(iter(image_loader))
-    heatmap = make_gradcam_heatmap(image, model, 'conv5').detach().numpy()
+    heatmaps = []
+
+    for k in range(len(genre_classes)):
+        heatmaps.append(make_gradcam_heatmap(image, model, 'conv10', pred_index=k).detach().numpy())
 
     img = cv2.imread(filepaths[i])
     cv2.imshow("Test", img)
 
-    heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
-    heatmap = np.uint8(255 * heatmap)
-    heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
-    superimposed_img = cv2.addWeighted(heatmap, 0.4, img, 1, 0)
+    # heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
+
+    plot_gradcam_heatmaps(img, model, genre_classes, output[i], heatmaps)
+
+    # try heatmap by changing visibility of the colors
+    '''
+    superimposed_img = img
+    for i in range(3):
+        superimposed_img[:, :, i] = np.uint8(np.minimum(img[:, :, i] * heatmap, 255))
+
+    # heatmap = np.uint8(255 * heatmap)
+    # heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+    # superimposed_img = cv2.addWeighted(heatmap, 0.4, img, 1, 0)
 
     cv2.imshow('Heatmap', heatmap)
     cv2.waitKey(0)
 
     cv2.imshow('Image with Heatmap', superimposed_img)
     cv2.waitKey(0)
+    
+    '''
 
-    print("Predicted labels:", label.item())
+    print("Predicted labels:", genre_classes[label.item()])
