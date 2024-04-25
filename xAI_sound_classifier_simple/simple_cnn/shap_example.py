@@ -6,12 +6,16 @@ import numpy as np
 import os
 import torch
 import torch.nn as nn
+import torchvision
 from matplotlib import image as mpimg
 from numpy.random import randint
 from random import choice
 import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
 from torch.utils import data
-from torch.utils.data import TensorDataset
+from torch.utils.data import TensorDataset, DataLoader
+from sklearn.preprocessing import LabelEncoder
+import shap
 
 
 # region Preprocessing
@@ -45,7 +49,6 @@ def get_features(data_path):
     max_height = 40
     images = []
     genres = []
-    filepaths = []
     for root, dirs, files in os.walk(data_path):
         for file in files:
             print("Getting features for " + file)
@@ -76,19 +79,16 @@ def get_features(data_path):
             mel_spectrogram = librosa.power_to_db(mel_spectrogram, ref=np.max)
             mel_spectrogram = mel_spectrogram[:, :max_width]
             mel_spectrogram_padded = pad(mel_spectrogram, max_height, max_width, "Mel Spectrogram")
+            mel_spectrogram_padded = np.expand_dims(mel_spectrogram_padded, axis=0)
 
             chroma_stft = chroma_stft[:, :max_width]
             chroma_stft = pad(chroma_stft, max_height, max_width, "Chromogram STFT")
             # chroma_stft = np.expand_dims(chroma_stft, axis=0)
 
-            filepath = save_feature_image(mel_spectrogram_padded, "Mel_Spectrogram", file)
-            mel_spectrogram_padded = np.expand_dims(mel_spectrogram_padded, axis=0)
-            filepaths.append(filepath)
-
             images.append(mel_spectrogram_padded)
             genres.append(genre)
 
-    return np.array(images), filepaths
+    return np.array(images), genres
 
 
 # endregion
@@ -173,150 +173,96 @@ class Network(nn.Module):
 # endregion
 
 
-# region Grad-CAM
-def make_gradcam_heatmap(img_tensor, model, last_conv_layer_name, pred_index):
-    # Create a sub-model that outputs the feature maps and final prediction
-    class SubModel(nn.Module):
-        def __init__(self, base_model, last_conv_layer_name):
-            super(SubModel, self).__init__()
-            self.base_model = base_model
-            self.last_conv_layer_name = last_conv_layer_name
+device = ("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using {device} device")
 
-        def forward(self, x):
-            # Get the output of the specified layer
-            submodel = nn.Sequential(*list(model.children())[:13])
-            conv_output = submodel(x)
-
-            # Get the final output of the model
-            final_output = self.base_model(x)
-
-            return conv_output, final_output
-
-    grad_model = SubModel(model, last_conv_layer_name)
-
-    # Set the model to evaluation mode
-    grad_model.eval()
-
-    # Use autograd to record gradients
-    img_tensor.requires_grad_(True)
-    conv_output, preds = grad_model(img_tensor)
-
-    # Gather the class score corresponding to the predicted class
-    class_score = preds[:, pred_index]
-
-    # Backpropagate
-    grad_model.zero_grad()
-    class_score.backward()
-
-    # Get the gradients from the last convolutional layer
-    gradients = grad_model.base_model.conv10.weight.grad
-
-    # Pool the gradients across the channels
-    pooled_gradients = torch.mean(gradients, dim=[0, 2, 3])
-
-    # Get the activations of the last convolutional layer (activations)
-    last_conv_layer_output = conv_output.detach()
-
-    for i in range(256):
-        last_conv_layer_output[:, i, :, :] *= pooled_gradients[i]
-
-    # get heatmap
-    heatmap = torch.mean(last_conv_layer_output, dim=1).squeeze()
-
-    # Normalise the heatmap
-    heatmap = np.maximum(heatmap, 0)
-    heatmap /= torch.max(heatmap)
-
-    # plt.imshow(heatmap, cmap='hot')
-    # plt.show()
-
-    return heatmap
-# endregion
-
-
-def plot_gradcam_heatmaps(img, model, genres, outputs, heatmaps):
-    outputs = torch.softmax(outputs, dim=0)
-    # cv2 uses BGR
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-    plt.figure(figsize=(15, 10))
-
-    for k in range(len(genre_classes)):
-        # try heatmap by changing visibility of the colors
-        heatmap = heatmaps[k]
-        heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
-
-        # plt.imshow(heatmap, cmap='hot')
-        # plt.show()
-
-        superimposed_img = img
-
-        # can't see anything, display side by side instead
-        # superimposed_img = cv2.addWeighted(heatmap, 0.4, img, 1, 0)
-
-        plt.subplot(5, 4, k*2 + 1)
-        plt.imshow(heatmap, cmap='hot')
-        plt.axis('off')
-        plt.title(f"Grad-CAM Heatmap for {genre_classes[k]}", fontsize=8)
-
-        plt.subplot(5, 4, k*2 + 2)
-        plt.imshow(img)
-        plt.axis('off')
-        plt.title(f"Predicted {genre_classes[k]} with a score of {outputs[k]}", fontsize=8)
-
-        plt.tight_layout()
-
-    plt.show()
-
-
-testdata_path = './testdata/audio/'
-genre_classes = ['blues', 'classical', 'country', 'disco', 'hiphop', 'jazz', 'metal', 'pop', 'reggae', 'rock']
-
-images, filepaths = get_features(testdata_path)
-
-images = torch.tensor(images)
-
-model = Network()
+model = Network().to(device)
 model.load_state_dict(torch.load("CNNModel.pth"))
 model.eval()
 
-output = model(images)
 
-predicted_label = torch.argmax(output, dim=1)
+def nhwc_to_nchw(x: torch.Tensor) -> torch.Tensor:
+    if x.dim() == 4:
+        x = x if x.shape[1] == 1 else x.permute(0, 3, 1, 2)
+    elif x.dim() == 3:
+        x = x if x.shape[0] == 1 else x.permute(2, 0, 1)
+    return x
 
-# load images into a data loader
-image_loader = data.DataLoader(dataset=images, shuffle=False, batch_size=1)
 
-for i, label in enumerate(predicted_label):
-    image = next(iter(image_loader))
-    heatmaps = []
+def nchw_to_nhwc(x: torch.Tensor) -> torch.Tensor:
+    if x.dim() == 4:
+        x = x if x.shape[3] == 1 else x.permute(0, 2, 3, 1)
+    elif x.dim() == 3:
+        x = x if x.shape[2] == 1 else x.permute(1, 2, 0)
+    return x
 
-    for k in range(len(genre_classes)):
-        heatmaps.append(make_gradcam_heatmap(image, model, 'conv10', pred_index=k).detach().numpy())
 
-    img = cv2.imread(filepaths[i])
-    cv2.imshow("Test", img)
+testdata_path = './testdata/audio/'
+data_path = '../data_loader/archive (15)/Data/genres_original/'
+genre_classes = ['blues', 'classical', 'country', 'disco', 'hiphop', 'jazz', 'metal', 'pop', 'reggae', 'rock']
 
-    # heatmap = cv2.resize(heatmap, (img.shape[1], img.shape[0]))
+test_images, test_genres = get_features(testdata_path)
+images, genres = get_features(data_path)
 
-    plot_gradcam_heatmaps(img, model, genre_classes, output[i], heatmaps)
+test_images = torch.tensor(test_images)
+X_train, X_test, y_train, y_test = train_test_split(images, genres, test_size=0.2, random_state=42)
+X_train = torch.tensor(X_train)
 
-    # try heatmap by changing visibility of the colors
-    '''
-    superimposed_img = img
-    for i in range(3):
-        superimposed_img[:, :, i] = np.uint8(np.minimum(img[:, :, i] * heatmap, 255))
 
-    # heatmap = np.uint8(255 * heatmap)
-    # heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
-    # superimposed_img = cv2.addWeighted(heatmap, 0.4, img, 1, 0)
+mean = torch.mean(X_train, dim=(2, 3))[0]
+std = torch.std(X_train, dim=(2, 3))[0]
 
-    cv2.imshow('Heatmap', heatmap)
-    cv2.waitKey(0)
+transform = [
+    torchvision.transforms.Lambda(nhwc_to_nchw),
+    torchvision.transforms.Lambda(lambda x: x * (1 / 255)),
+    torchvision.transforms.Normalize(mean=mean, std=std),
+    torchvision.transforms.Lambda(nchw_to_nhwc),
+]
 
-    cv2.imshow('Image with Heatmap', superimposed_img)
-    cv2.waitKey(0)
-    
-    '''
+inv_transform = [
+    torchvision.transforms.Lambda(nhwc_to_nchw),
+    torchvision.transforms.Normalize(
+        mean=(-1 * np.array(mean) / np.array(std)).tolist(),
+        std=(1 / np.array(std)).tolist(),
+    ),
+    torchvision.transforms.Lambda(nchw_to_nhwc),
+]
 
-    print("Predicted labels:", genre_classes[label.item()])
+transform = torchvision.transforms.Compose(transform)
+inv_transform = torchvision.transforms.Compose(inv_transform)
+
+
+def predict(img: np.ndarray) -> torch.Tensor:
+    img = nhwc_to_nchw(torch.Tensor(img))
+    img = img.to(device)
+    output = model(img)
+    return output
+
+
+def main():
+    # test
+    Xtr = transform(torch.Tensor(X_test))
+    out = predict(Xtr[1:3])
+    classes = torch.argmax(out, axis=1).cpu().numpy()
+    print(f"Classes: {classes}: {np.array(genre_classes)[classes]}")
+
+    # test
+    masker_blur = shap.maskers.Image("blur(128, 128)", Xtr[0].shape)
+
+    explainer = shap.Explainer(predict, masker_blur, output_names=genre_classes)
+    shap_values = explainer(
+        Xtr[:1],
+        max_evals=100,
+        batch_size=50,
+        outputs=shap.Explanation.argsort.flip[:10]
+    )
+
+    outputs = predict(Xtr[3:20])
+    classes = torch.argmax(outputs, axis=1).cpu().numpy()
+    print(f"Classes: {classes}: {np.array(genre_classes)[classes]}")
+    for index, output in enumerate(outputs[3:20]):
+        print(f"actual output {y_train[index + 3]}")
+
+
+if __name__ == "__main__":
+    main()
