@@ -207,7 +207,7 @@ def main():
     n_epochs = 40
 
     train_loader = DataLoader(train_dataset, shuffle=True, batch_size=batch_size)
-    test_loader = DataLoader(test_dataset, shuffle=True, batch_size=batch_size)
+    test_loader = DataLoader(test_dataset, shuffle=False, batch_size=batch_size)
 
     model = Network().to(device)
     loss_fn = nn.CrossEntropyLoss()

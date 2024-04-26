@@ -209,13 +209,13 @@ X_train, X_test, y_train, y_test = train_test_split(images, genres, test_size=0.
 X_train = torch.tensor(X_train)
 
 
-mean = torch.mean(X_train, dim=(2, 3))[0]
-std = torch.std(X_train, dim=(2, 3))[0]
+mean = torch.mean(X_train, dim=(0, 2, 3))
+std = torch.std(X_train, dim=(0, 2, 3))
 
 transform = [
     torchvision.transforms.Lambda(nhwc_to_nchw),
-    torchvision.transforms.Lambda(lambda x: x * (1 / 255)),
-    torchvision.transforms.Normalize(mean=mean, std=std),
+    # torchvision.transforms.Lambda(lambda x: x * (1 / 255)),
+    # torchvision.transforms.Normalize(mean=mean, std=std),
     torchvision.transforms.Lambda(nchw_to_nhwc),
 ]
 
@@ -241,7 +241,7 @@ def predict(img: np.ndarray) -> torch.Tensor:
 
 def main():
     # test
-    Xtr = transform(torch.Tensor(X_test))
+    Xtr = transform(torch.Tensor(X_train))
     out = predict(Xtr[1:3])
     classes = torch.argmax(out, axis=1).cpu().numpy()
     print(f"Classes: {classes}: {np.array(genre_classes)[classes]}")
@@ -254,14 +254,18 @@ def main():
         Xtr[:1],
         max_evals=100,
         batch_size=50,
-        outputs=shap.Explanation.argsort.flip[:10]
+        outputs=shap.Explanation.argsort.flip[:4]
     )
 
-    outputs = predict(Xtr[3:20])
-    classes = torch.argmax(outputs, axis=1).cpu().numpy()
-    print(f"Classes: {classes}: {np.array(genre_classes)[classes]}")
-    for index, output in enumerate(outputs[3:20]):
-        print(f"actual output {y_train[index + 3]}")
+    shap_values.data = inv_transform(shap_values.data).cpu().numpy()[0]
+    shap_values.values = [val for val in np.moveaxis(shap_values.values[0], -1, 0)]
+
+    shap.image_plot(
+        shap_values=shap_values.values,
+        pixel_values=shap_values.data,
+        labels=shap_values.output_names,
+        true_labels=[y_train[0]],
+    )
 
 
 if __name__ == "__main__":
