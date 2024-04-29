@@ -1,21 +1,13 @@
-import glob
-
 import cv2
 import librosa
 import numpy as np
 import os
 import torch
 import torch.nn as nn
-import torchvision
-from matplotlib import image as mpimg
-from numpy.random import randint
-from random import choice
 import matplotlib.pyplot as plt
+import lime
+from lime import lime_image
 from sklearn.model_selection import train_test_split
-from torch.utils import data
-from torch.utils.data import TensorDataset, DataLoader
-from sklearn.preprocessing import LabelEncoder
-import shap
 
 
 # region Preprocessing
@@ -79,13 +71,15 @@ def get_features(data_path):
             mel_spectrogram = librosa.power_to_db(mel_spectrogram, ref=np.max)
             mel_spectrogram = mel_spectrogram[:, :max_width]
             mel_spectrogram_padded = pad(mel_spectrogram, max_height, max_width, "Mel Spectrogram")
-            mel_spectrogram_padded = np.expand_dims(mel_spectrogram_padded, axis=0)
+            # mel_spectrogram_padded = np.expand_dims(mel_spectrogram_padded, axis=0)
+
+            mel_spectrogram_rgb = np.stack([mel_spectrogram_padded] * 3, axis=-1)
 
             chroma_stft = chroma_stft[:, :max_width]
             chroma_stft = pad(chroma_stft, max_height, max_width, "Chromogram STFT")
             # chroma_stft = np.expand_dims(chroma_stft, axis=0)
 
-            images.append(mel_spectrogram_padded)
+            images.append(mel_spectrogram_rgb)
             genres.append(genre)
 
     return np.array(images), genres
@@ -170,107 +164,35 @@ class Network(nn.Module):
         x = self.dropout(torch.relu(self.fc2(x)))
         x = self.fc3(x)
         return x
+
+    def predict(self, x):
+        x = x.transpose(0, 3, 1, 2)
+        x = torch.cuda.FloatTensor(x)
+        return self.forward(x)
 # endregion
 
 
-device = ("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using {device} device")
-
-model = Network().to(device)
-model.load_state_dict(torch.load("CNNModel.pth"))
-model.eval()
-
-
-def nhwc_to_nchw(x: torch.Tensor) -> torch.Tensor:
-    if x.dim() == 4:
-        x = x if x.shape[1] == 1 else x.permute(0, 3, 1, 2)
-    elif x.dim() == 3:
-        x = x if x.shape[0] == 1 else x.permute(2, 0, 1)
-    return x
-
-
-def nchw_to_nhwc(x: torch.Tensor) -> torch.Tensor:
-    if x.dim() == 4:
-        x = x if x.shape[3] == 1 else x.permute(0, 2, 3, 1)
-    elif x.dim() == 3:
-        x = x if x.shape[2] == 1 else x.permute(1, 2, 0)
-    return x
-
-
-testdata_path = './testdata/audio/'
-data_path = '../data_loader/archive (15)/Data/genres_original/'
-genre_classes = ['blues', 'classical', 'country', 'disco', 'hiphop', 'jazz', 'metal', 'pop', 'reggae', 'rock']
-
-test_images, test_genres = get_features(testdata_path)
-images, genres = get_features(data_path)
-
-test_images = torch.tensor(test_images)
-X_train, X_test, y_train, y_test = train_test_split(images, genres, test_size=0.2, random_state=42)
-X_train = torch.tensor(X_train)
-
-
-mean = torch.mean(X_train, dim=(0, 2, 3))
-std = torch.std(X_train, dim=(0, 2, 3))
-
-transform = [
-    torchvision.transforms.Lambda(nhwc_to_nchw),
-    # torchvision.transforms.Lambda(lambda x: x * (1 / 255)),
-    # torchvision.transforms.Normalize(mean=mean, std=std),
-    torchvision.transforms.Lambda(nchw_to_nhwc),
-]
-
-inv_transform = [
-    torchvision.transforms.Lambda(nhwc_to_nchw),
-    torchvision.transforms.Normalize(
-        mean=(-1 * np.array(mean) / np.array(std)).tolist(),
-        std=(1 / np.array(std)).tolist(),
-    ),
-    torchvision.transforms.Lambda(nchw_to_nhwc),
-]
-
-transform = torchvision.transforms.Compose(transform)
-inv_transform = torchvision.transforms.Compose(inv_transform)
-
-
-def predict(img: np.ndarray) -> torch.Tensor:
-    img = nhwc_to_nchw(torch.Tensor(img))
-    img = img.to(device)
-    output = model(img)
-    return output
-
-
 def main():
-    # test
-    Xtr = transform(torch.Tensor(X_train))
-    out = predict(Xtr[1:3])
-    classes = torch.argmax(out, axis=1).cpu().numpy()
-    print(f"Classes: {classes}: {np.array(genre_classes)[classes]}")
+    device = ("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using {device} device")
 
-    # test
-    masker_blur = shap.maskers.Image("blur(3, 3)", Xtr[0].shape)
+    model = Network().to(device)
+    model.load_state_dict(torch.load("CNNModel_3Channel.pth"))
+    model.eval()
 
-    explainer = shap.Explainer(predict, masker_blur, output_names=genre_classes)
-
-    # test local test files
-    local_test, _ = get_features(testdata_path)
-    local_test = torch.tensor(local_test)
-    local_test = transform(local_test)
-
-    shap_values = explainer(
-        local_test[1:2],
-        max_evals=100,
-        batch_size=50,
-        outputs=shap.Explanation.argsort.flip[:4]
+    testdata_path = './testdata/audio/'
+    genre_classes = ['blues', 'classical', 'country', 'disco', 'hiphop', 'jazz', 'metal', 'pop', 'reggae', 'rock']
+    images, genres = get_features(testdata_path)
+    
+    x = 0
+    explainer = lime_image.LimeImageExplainer(random_state=42)
+    explanation = explainer.explain_instance(
+        images[x],
+        model.predict,
+        top_labels=2
     )
 
-    shap_values.data = inv_transform(shap_values.data).cpu().numpy()[0]
-    shap_values.values = [val for val in np.moveaxis(shap_values.values[0], -1, 0)]
-
-    shap.image_plot(
-        shap_values=shap_values.values,
-        pixel_values=shap_values.data,
-        labels=shap_values.output_names
-    )
+    image, mask = explanation.get_image_and_mask(0, positive_only=True, hide_rest=True)
 
 
 if __name__ == "__main__":

@@ -268,6 +268,11 @@ def plot_gradcam_heatmaps(img, model, genres, outputs, heatmaps):
 
     plt.show()
 
+    # Nur die Korrekte Heatmap als Vergleich zur Audio datei anzeigen
+    plt.imshow(heatmaps[torch.argmax(outputs)], cmap='hot')
+    plt.title(f"Grad-CAM Heatmap for {genre_classes[torch.argmax(outputs)]}", fontsize=8)
+    plt.show()
+
 
 testdata_path = './testdata/audio/'
 genre_classes = ['blues', 'classical', 'country', 'disco', 'hiphop', 'jazz', 'metal', 'pop', 'reggae', 'rock']
