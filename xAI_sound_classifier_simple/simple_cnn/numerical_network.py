@@ -110,6 +110,9 @@ def main():
     test_loss, test_acc = model.evaluate(X_test, y_test)
     print('Test accuracy:', test_acc)
 
+    model.save('my_model.h5')
+    print("Model saved successfully.")
+
 
 if __name__ == "__main__":
     main()
